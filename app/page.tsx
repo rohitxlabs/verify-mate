@@ -22,21 +22,26 @@ import {
   Award,
   RotateCcw,
   Search,
-  ExternalLink
+  ExternalLink,
+  ChevronDown,
+  MessageSquare,
+  Tag,
+  AlertCircle,
+  UserCheck,
+  Calculator,
+  Layers
 } from "lucide-react";
 
 interface EvaluatorUser {
   email: string;
   role: string;
+  panelist_number?: number;
 }
 
-interface StudentMarks {
-  problem_understanding: string;
-  prototype_development: string;
-  innovation: string;
-  team_work: string;
-  market_readiness: string;
-  presentation: string;
+interface StudentFeedback {
+  category: string;
+  customCategory: string;
+  remarks: string;
 }
 
 interface StudentItem {
@@ -44,7 +49,15 @@ interface StudentItem {
   email?: string;
   teamCode?: string;
   college?: string;
-  marks: StudentMarks;
+  evaluation_category?: string;
+  custom_category?: string;
+  remarks?: string;
+  myRemark?: string;
+  combinedRemarks?: string;
+  combined_remarks?: string;
+  team_marks?: string;
+  total_marks?: number;
+  panelist_count?: number;
 }
 
 interface ActiveTeamData {
@@ -54,62 +67,31 @@ interface ActiveTeamData {
   teamData: Record<string, string | undefined>;
   teamMembers: string[];
   students: StudentItem[];
+  teamMarks?: string;
+  totalMarks?: number;
+  panelistCount?: number;
+  averageMarks?: string;
+  myTeamMarks?: string;
+  alreadySubmitted?: boolean;
   updatedAt?: string;
 }
 
-const CRITERIA_COLUMNS = [
-  {
-    key: "problem_understanding" as keyof StudentMarks,
-    sheetColumn: "Problem understanding",
-    label: "Problem statement understand",
-    short: "Problem Understand",
-    badgeColor: "bg-blue-500/20 text-blue-300 border-blue-500/30",
-    focusBorder: "focus:border-blue-400 focus:ring-blue-400",
-  },
-  {
-    key: "prototype_development" as keyof StudentMarks,
-    sheetColumn: "Prototype developement",
-    label: "Prototype developement",
-    short: "Prototype Dev",
-    badgeColor: "bg-cyan-500/20 text-cyan-300 border-cyan-500/30",
-    focusBorder: "focus:border-cyan-400 focus:ring-cyan-400",
-  },
-  {
-    key: "innovation" as keyof StudentMarks,
-    sheetColumn: "Innovation",
-    label: "Innovation",
-    short: "Innovation",
-    badgeColor: "bg-purple-500/20 text-purple-300 border-purple-500/30",
-    focusBorder: "focus:border-purple-400 focus:ring-purple-400",
-  },
-  {
-    key: "team_work" as keyof StudentMarks,
-    sheetColumn: "Team Work",
-    label: "Team work",
-    short: "Team Work",
-    badgeColor: "bg-amber-500/20 text-amber-300 border-amber-500/30",
-    focusBorder: "focus:border-amber-400 focus:ring-amber-400",
-  },
-  {
-    key: "market_readiness" as keyof StudentMarks,
-    sheetColumn: "Market Readiness",
-    label: "Market readinesss",
-    short: "Market Readiness",
-    badgeColor: "bg-emerald-500/20 text-emerald-300 border-emerald-500/30",
-    focusBorder: "focus:border-emerald-400 focus:ring-emerald-400",
-  },
-  {
-    key: "presentation" as keyof StudentMarks,
-    sheetColumn: "Presentation",
-    label: "Presentation",
-    short: "Presentation",
-    badgeColor: "bg-rose-500/20 text-rose-300 border-rose-500/30",
-    focusBorder: "focus:border-rose-400 focus:ring-rose-400",
-  },
+const EVALUATION_CATEGORIES = [
+  "Presentation",
+  "Coding",
+  "Innovation",
+  "Others"
 ];
 
 const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_URL || "http://localhost:3000";
+  process.env.NEXT_PUBLIC_API_URL ||
+  "https://event-registration-backend-pearl.vercel.app";
+
+// Helper to get clean evaluator user ID without email domain for badge
+function getUserIdDisplay(user: EvaluatorUser | null): string {
+  if (!user?.email) return "Evaluator";
+  return user.email.includes("@") ? user.email.split("@")[0] : user.email;
+}
 
 export default function EvaluatorPage() {
   const [user, setUser] = useState<EvaluatorUser | null>(null);
@@ -121,15 +103,16 @@ export default function EvaluatorPage() {
   const [newScanAlert, setNewScanAlert] = useState(false);
   const previousTeamIdRef = useRef<string | null>(null);
 
-  // Student marks state: studentName -> StudentMarks
-  const [studentsMarks, setStudentsMarks] = useState<Record<string, StudentMarks>>({});
+  // Team Marks state (entered once per team by this panelist)
+  const [teamMarks, setTeamMarks] = useState<string>("");
+  const [teamMarksError, setTeamMarksError] = useState<string>("");
+
+  // Individual student remarks & category state: studentName -> StudentFeedback
+  const [studentFeedback, setStudentFeedback] = useState<Record<string, StudentFeedback>>({});
   const [isSaving, setIsSaving] = useState(false);
   const [savingStudent, setSavingStudent] = useState<string | null>(null);
   const [savedSuccessMsg, setSavedSuccessMsg] = useState("");
 
-  // Manual test code input (for testing without a physical phone)
-  const [manualCode, setManualCode] = useState("");
-  const [manualLoading, setManualLoading] = useState(false);
 
   // Login form state
   const [loginEmail, setLoginEmail] = useState("");
@@ -154,6 +137,70 @@ export default function EvaluatorPage() {
       setIsInitialized(true);
     }
   }, []);
+
+  // Helper to synchronize active team data for this specific panelist
+  const syncActiveTeamData = (data: any, isNewTeam: boolean) => {
+    let studentList: StudentItem[] = [];
+    if (Array.isArray(data.students) && data.students.length > 0) {
+      studentList = data.students;
+    }
+
+    const teamDisplayName =
+      data.teamName ||
+      data.teamData?.["Team Name"] ||
+      data.teamData?.["Team_Name"] ||
+      data.teamId;
+
+    setActiveTeam({
+      teamId: data.teamId,
+      teamCode: data.teamCode || data.teamId,
+      teamName: teamDisplayName,
+      teamData: data.teamData || {},
+      teamMembers: Array.isArray(data.teamMembers) ? data.teamMembers : [],
+      students: studentList,
+      teamMarks: data.teamMarks,
+      totalMarks: data.totalMarks !== undefined ? Number(data.totalMarks) : 0,
+      panelistCount: data.panelistCount !== undefined ? Number(data.panelistCount) : 0,
+      averageMarks: data.averageMarks || "",
+      myTeamMarks: data.myTeamMarks || "",
+      alreadySubmitted: Boolean(data.alreadySubmitted),
+      updatedAt: data.updatedAt,
+    });
+
+    // Populate this evaluator's own saved marks
+    if (data.myTeamMarks !== undefined && data.myTeamMarks !== null && data.myTeamMarks !== "") {
+      setTeamMarks(String(data.myTeamMarks));
+    } else if (isNewTeam) {
+      setTeamMarks("");
+    }
+
+    // Populate individual feedback state for this evaluator
+    setStudentFeedback((prev) => {
+      const next = { ...prev };
+      studentList.forEach((st) => {
+        if (isNewTeam || !next[st.name]) {
+          const myRemark = st.myRemark ?? st.remarks ?? "";
+          let myCat = st.evaluation_category || "Presentation";
+          let customCat = st.custom_category || "";
+
+          if (myCat.startsWith("Others: ")) {
+            customCat = myCat.replace("Others: ", "");
+            myCat = "Others";
+          } else if (!EVALUATION_CATEGORIES.includes(myCat) && myCat) {
+            customCat = myCat;
+            myCat = "Others";
+          }
+
+          next[st.name] = {
+            category: myCat || "Presentation",
+            customCategory: customCat,
+            remarks: myRemark || "",
+          };
+        }
+      });
+      return next;
+    });
+  };
 
   // Poll for mobile scan updates for the logged in evaluator
   useEffect(() => {
@@ -182,49 +229,14 @@ export default function EvaluatorPage() {
             setTimeout(() => setNewScanAlert(false), 3000);
           }
 
-          let studentList: StudentItem[] = [];
-          if (Array.isArray(data.students) && data.students.length > 0) {
-            studentList = data.students;
-          }
-
-          const teamDisplayName =
-            data.teamName ||
-            data.teamData?.["Team Name"] ||
-            data.teamData?.["Team_Name"] ||
-            data.teamId;
-
-          setActiveTeam({
-            teamId: data.teamId,
-            teamCode: data.teamCode || data.teamId,
-            teamName: teamDisplayName,
-            teamData: data.teamData || {},
-            teamMembers: Array.isArray(data.teamMembers) ? data.teamMembers : [],
-            students: studentList,
-            updatedAt: data.updatedAt,
-          });
-
-          // Sync marks state for students in this scanned team
-          setStudentsMarks((prev) => {
-            const next = { ...prev };
-            studentList.forEach((st) => {
-              if (isNewTeam || !next[st.name]) {
-                next[st.name] = {
-                  problem_understanding: st.marks?.problem_understanding || "",
-                  prototype_development: st.marks?.prototype_development || "",
-                  innovation: st.marks?.innovation || "",
-                  team_work: st.marks?.team_work || "",
-                  market_readiness: st.marks?.market_readiness || "",
-                  presentation: st.marks?.presentation || "",
-                };
-              }
-            });
-            return next;
-          });
+          syncActiveTeamData(data, isNewTeam);
         } else if (data.status === "waiting") {
           // No team is currently scanned for this evaluator
           if (previousTeamIdRef.current !== null) {
             previousTeamIdRef.current = null;
             setActiveTeam(null);
+            setTeamMarks("");
+            setStudentFeedback({});
           }
         }
       } catch (err) {
@@ -268,6 +280,7 @@ export default function EvaluatorPage() {
         const userData: EvaluatorUser = {
           email: data.user.email,
           role: data.user.role || "evaluator",
+          panelist_number: data.user.panelist_number,
         };
         localStorage.setItem("evaluator_user", JSON.stringify(userData));
         setUser(userData);
@@ -289,7 +302,8 @@ export default function EvaluatorPage() {
     localStorage.removeItem("evaluator_user");
     setUser(null);
     setActiveTeam(null);
-    setStudentsMarks({});
+    setTeamMarks("");
+    setStudentFeedback({});
     previousTeamIdRef.current = null;
   };
 
@@ -303,118 +317,114 @@ export default function EvaluatorPage() {
         body: JSON.stringify({ username: user.email }),
       });
       setActiveTeam(null);
+      setTeamMarks("");
+      setStudentFeedback({});
       previousTeamIdRef.current = null;
     } catch (e) {
       console.error("Failed to clear active team:", e);
     }
   };
 
-  // Handle Manual Scan / Code entry (for quick testing)
-  const handleManualScan = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!manualCode.trim() || !user) return;
 
-    setManualLoading(true);
-    try {
-      const res = await fetch(`${API_BASE_URL}/scan`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          qr_number: manualCode.trim(),
-          scanner_email: user.email,
-        }),
-      });
-
-      const data = await res.json();
-      if (data.status === "success") {
-        setManualCode("");
-        // Trigger immediate poll
-        const activeRes = await fetch(
-          `${API_BASE_URL}/evaluator/active-team?username=${encodeURIComponent(
-            user.email
-          )}`
-        );
-        const activeData = await activeRes.json();
-        if (activeData.status === "success") {
-          setActiveTeam({
-            teamId: activeData.teamId,
-            teamCode: activeData.teamCode || activeData.teamId,
-            teamName:
-              activeData.teamName ||
-              activeData.teamData?.["Team Name"] ||
-              activeData.teamId,
-            teamData: activeData.teamData || {},
-            teamMembers: Array.isArray(activeData.teamMembers) ? activeData.teamMembers : [],
-            students: Array.isArray(activeData.students) ? activeData.students : [],
-            updatedAt: activeData.updatedAt,
-          });
-        }
-      } else {
-        alert(data.message || "Failed to load team by code");
-      }
-    } catch (err) {
-      console.error("Manual scan error:", err);
-      alert("Error contacting backend server");
-    } finally {
-      setManualLoading(false);
-    }
-  };
-
-  // Handle Mark Change
-  const handleMarkChange = (
-    studentName: string,
-    field: keyof StudentMarks,
-    value: string
-  ) => {
-    if (value !== "") {
-      const num = parseFloat(value);
-      if (isNaN(num) || num < 0 || num > 10) return;
-    }
-
-    setStudentsMarks((prev) => ({
+  // Handle Category Change
+  const handleCategoryChange = (studentName: string, category: string) => {
+    setStudentFeedback((prev) => ({
       ...prev,
       [studentName]: {
         ...(prev[studentName] || {
-          problem_understanding: "",
-          prototype_development: "",
-          innovation: "",
-          team_work: "",
-          market_readiness: "",
-          presentation: "",
+          category: "Presentation",
+          customCategory: "",
+          remarks: "",
         }),
-        [field]: value,
+        category,
       },
     }));
   };
 
-  // Calculate Total Score for student (/60)
-  const getStudentTotal = (marks?: StudentMarks) => {
-    if (!marks) return 0;
-    const p1 = parseFloat(marks.problem_understanding) || 0;
-    const p2 = parseFloat(marks.prototype_development) || 0;
-    const p3 = parseFloat(marks.innovation) || 0;
-    const p4 = parseFloat(marks.team_work) || 0;
-    const p5 = parseFloat(marks.market_readiness) || 0;
-    const p6 = parseFloat(marks.presentation) || 0;
-    return Math.round((p1 + p2 + p3 + p4 + p5 + p6) * 10) / 10;
+  // Handle Custom Category Change (when category === 'Others')
+  const handleCustomCategoryChange = (studentName: string, customCategory: string) => {
+    setStudentFeedback((prev) => ({
+      ...prev,
+      [studentName]: {
+        ...(prev[studentName] || {
+          category: "Others",
+          customCategory: "",
+          remarks: "",
+        }),
+        customCategory,
+      },
+    }));
   };
 
-  // Save Marks to Google Sheet & DB (first looks up by team code, then student name)
-  const handleSaveMarks = async (targetStudent?: StudentItem) => {
+  // Handle Remarks Change
+  const handleRemarksChange = (studentName: string, remarks: string) => {
+    setStudentFeedback((prev) => ({
+      ...prev,
+      [studentName]: {
+        ...(prev[studentName] || {
+          category: "Presentation",
+          customCategory: "",
+          remarks: "",
+        }),
+        remarks,
+      },
+    }));
+  };
+
+  // Handle Team Marks Input Change (validated according to scoring rules)
+  const handleTeamMarksChange = (value: string) => {
+    setTeamMarksError("");
+    if (value === "") {
+      setTeamMarks("");
+      return;
+    }
+    const num = parseFloat(value);
+    if (isNaN(num) || num < 0) return;
+    setTeamMarks(value);
+  };
+
+  // Save Evaluation (Team Marks + Individual Student Remarks)
+  const handleSaveEvaluation = async (targetStudent?: StudentItem) => {
     if (!user || !activeTeam) return;
 
-    const listToSave = targetStudent
-      ? [targetStudent]
-      : activeTeam.students;
+    // Validate Team Marks when submitting overall evaluation
+    if (!targetStudent) {
+      if (teamMarks.trim() === "") {
+        setTeamMarksError("Please enter your team marks before submitting.");
+        return;
+      }
+      const num = parseFloat(teamMarks);
+      if (isNaN(num) || num < 0) {
+        setTeamMarksError("Please enter a valid positive number for team marks.");
+        return;
+      }
+    }
 
+    const listToSave = targetStudent ? [targetStudent] : activeTeam.students;
     if (listToSave.length === 0) return;
 
-    const payloadStudents = listToSave.map((s) => ({
-      name: s.name,
-      email: s.email || "",
-      teamCode: activeTeam.teamCode,
-      marks: studentsMarks[s.name] || s.marks,
-    }));
+    const payloadStudents = listToSave.map((s) => {
+      const fb = studentFeedback[s.name] || {
+        category: s.evaluation_category || "Presentation",
+        customCategory: s.custom_category || "",
+        remarks: s.remarks || "",
+      };
+      const finalCategory =
+        fb.category === "Others" && fb.customCategory
+          ? `Others: ${fb.customCategory.trim()}`
+          : fb.category;
+
+      return {
+        name: s.name,
+        email: s.email || "",
+        teamCode: activeTeam.teamCode,
+        category: fb.category,
+        custom_category: fb.customCategory,
+        evaluation_category: finalCategory,
+        remarks: fb.remarks,
+        team_marks: teamMarks,
+      };
+    });
 
     if (targetStudent) {
       setSavingStudent(targetStudent.name);
@@ -430,20 +440,33 @@ export default function EvaluatorPage() {
           evaluator_username: user.email,
           team_code: activeTeam.teamCode,
           team_name: activeTeam.teamName,
+          team_marks: teamMarks,
           students: payloadStudents,
         }),
       });
 
       const data = await res.json();
       if (data.status === "success") {
+        const total = data.total_marks ?? activeTeam.totalMarks;
+        const count = data.panelist_count ?? activeTeam.panelistCount;
+
         setSavedSuccessMsg(
           targetStudent
-            ? `✓ Marks saved to Google Sheet for "${targetStudent.name}"!`
-            : `✓ Marks saved to Google Sheet for all students in Team "${activeTeam.teamName}"!`
+            ? `✓ Remarks for "${targetStudent.name}" updated! Total Marks: ${total} (${count} panelist${count > 1 ? "s" : ""}).`
+            : `✓ Team evaluation submitted! Total Marks: ${total} (Sum across ${count} panelist${count > 1 ? "s" : ""}). Remarks prefixed with your User ID (${getUserIdDisplay(user)}).`
         );
-        setTimeout(() => setSavedSuccessMsg(""), 4000);
+        setTimeout(() => setSavedSuccessMsg(""), 6000);
+
+        // Re-fetch active team immediately so combined remarks and totals update on screen
+        const refreshRes = await fetch(
+          `${API_BASE_URL}/evaluator/active-team?username=${encodeURIComponent(user.email)}`
+        );
+        const refreshData = await refreshRes.json();
+        if (refreshData.status === "success") {
+          syncActiveTeamData(refreshData, false);
+        }
       } else {
-        alert(data.message || "Failed to save marks to Google Sheet");
+        alert(data.message || "Failed to save evaluation to Google Sheet");
       }
     } catch (err) {
       console.error("Save marks error:", err);
@@ -506,7 +529,7 @@ export default function EvaluatorPage() {
                     type="text"
                     value={loginEmail}
                     onChange={(e) => setLoginEmail(e.target.value)}
-                    placeholder="e.g. evaluator or evaluator@..."
+                    placeholder="Enter username or email"
                     className="w-full pl-11 pr-4 py-3.5 rounded-xl bg-white/10 border border-white/20 text-white placeholder-cyan-200/40 focus:outline-none focus:ring-2 focus:ring-[#00A8E8] focus:border-transparent transition-all text-sm"
                     required
                   />
@@ -566,6 +589,8 @@ export default function EvaluatorPage() {
   // ==========================================
   // VIEW 2: EVALUATOR DASHBOARD
   // ==========================================
+  const userIdDisplay = getUserIdDisplay(user);
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-[#00171F] via-[#003459] to-[#007EA7] text-white flex flex-col">
       {/* Header */}
@@ -582,21 +607,28 @@ export default function EvaluatorPage() {
               <div className="text-xs text-cyan-300 font-medium flex items-center gap-1.5">
                 <span>Evaluator Portal</span>
                 <span className="w-1 h-1 rounded-full bg-cyan-400" />
-                <span className="text-[11px] text-cyan-200/70">Scanned Team Scoring</span>
+                <span className="text-[11px] text-cyan-200/70">Scoring & Remarks</span>
               </div>
             </div>
           </div>
 
-          <div className="flex items-center gap-3">
-            <div className="px-3.5 py-1.5 rounded-xl bg-white/10 border border-white/15 text-xs text-cyan-100 flex items-center gap-2">
-              <span className="text-cyan-300/80">Hi there,</span>
-              <span className="font-bold text-white max-w-[180px] truncate">{user.email}</span>
+          <div className="flex items-center gap-2 sm:gap-3">
+            {/* Authenticated Evaluator User ID Badge */}
+            <div className="px-3 py-1.5 rounded-xl bg-gradient-to-r from-cyan-600/30 to-blue-600/30 border border-cyan-400/40 text-xs font-bold text-cyan-200 flex items-center gap-1.5 shadow-sm">
+              <ShieldCheck className="w-3.5 h-3.5 text-cyan-300" />
+              <span>{userIdDisplay}</span>
+            </div>
+
+            {/* Logged in User Email */}
+            <div className="hidden lg:flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white/5 border border-white/10 text-xs text-cyan-200/70">
+              <Mail className="w-3 h-3 text-cyan-400/70" />
+              <span className="font-mono text-[11px] truncate max-w-[160px]">{user.email}</span>
             </div>
 
             <button
               onClick={handleLogout}
               title="Logout"
-              className="p-2 rounded-xl bg-white/10 hover:bg-red-500/20 border border-white/15 hover:border-red-500/40 text-cyan-200 hover:text-red-300 transition-colors"
+              className="p-2 rounded-xl bg-white/10 hover:bg-red-500/20 border border-white/15 hover:border-red-500/40 text-cyan-200 hover:text-red-300 transition-colors cursor-pointer"
             >
               <LogOut className="w-4 h-4" />
             </button>
@@ -635,11 +667,11 @@ export default function EvaluatorPage() {
 
               {/* Greeting */}
               <h2 className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight mb-2">
-                Hi there, <span className="text-cyan-300">{user.email}</span>! 👋
+                Hi there, <span className="text-cyan-300">{userIdDisplay}</span>! 👋
               </h2>
 
-              <p className="text-base text-cyan-100 font-semibold mb-4">
-                Waiting for QR Code Scan from Phone App
+              <p className="text-base text-cyan-100 font-semibold mb-4 flex items-center justify-center gap-2">
+                <span>Waiting for Mobile QR Code Scan</span>
               </p>
 
               <div className="max-w-md mx-auto p-4 rounded-2xl bg-white/5 border border-white/10 text-xs text-cyan-200/80 leading-relaxed mb-8 text-left space-y-2">
@@ -653,7 +685,7 @@ export default function EvaluatorPage() {
                 </div>
                 <div className="flex items-start gap-2">
                   <span className="w-5 h-5 rounded-full bg-[#007EA7] text-white text-[11px] font-bold flex items-center justify-center flex-shrink-0 mt-0.5">3</span>
-                  <span>Scan any team's QR badge. <strong>That team's name and student scoring table will automatically appear here!</strong></span>
+                  <span>Scan any team's QR badge. <strong>The team name, member list, and scoring section will appear instantly!</strong></span>
                 </div>
               </div>
 
@@ -663,41 +695,14 @@ export default function EvaluatorPage() {
                 <span>Live Sync Active: Listening for your phone's scan...</span>
               </div>
 
-              {/* Quick Manual Test Code Form (helpful for instant testing) */}
-              <div className="mt-8 pt-6 border-t border-white/10 text-left">
-                <div className="text-xs font-semibold text-cyan-200/70 mb-2 flex items-center justify-between">
-                  <span>Quick Test / Manual Team Code:</span>
-                  <span className="text-[10px] text-cyan-300/50">Enter Team Code or QR</span>
-                </div>
-                <form onSubmit={handleManualScan} className="flex gap-2">
-                  <input
-                    type="text"
-                    value={manualCode}
-                    onChange={(e) => setManualCode(e.target.value)}
-                    placeholder="e.g. TC-01 or QR number"
-                    className="flex-1 px-3.5 py-2 rounded-xl bg-black/30 border border-white/15 text-xs text-white placeholder-cyan-200/40 focus:outline-none focus:ring-2 focus:ring-[#00A8E8]"
-                  />
-                  <button
-                    type="submit"
-                    disabled={manualLoading || !manualCode.trim()}
-                    className="px-4 py-2 rounded-xl text-xs font-bold bg-[#007EA7] hover:bg-[#00A8E8] text-white transition-colors disabled:opacity-50 flex items-center gap-1.5 cursor-pointer"
-                  >
-                    {manualLoading ? (
-                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                    ) : (
-                      <span>Load Team</span>
-                    )}
-                  </button>
-                </form>
-              </div>
             </div>
           </div>
         ) : (
           /* ======================================================== */
-          /* CASE 2: TEAM IS SCANNED -> SHOW ONLY THE SCANNED TEAM     */
+          /* CASE 2: TEAM IS SCANNED -> SHOW EVALUATOR FORM            */
           /* ======================================================== */
           <>
-            {/* Banner for the SCANNED Team Only */}
+            {/* Banner for the SCANNED Team */}
             <div
               className={`glass-panel-elevated rounded-3xl p-6 border transition-all duration-500 shadow-2xl ${
                 newScanAlert
@@ -716,16 +721,17 @@ export default function EvaluatorPage() {
                     <div className="flex items-center gap-2.5 flex-wrap">
                       <span className="px-2.5 py-0.5 rounded-full bg-emerald-500/20 border border-emerald-400/40 text-emerald-300 text-[11px] font-bold flex items-center gap-1">
                         <Smartphone className="w-3 h-3" />
-                        Scanned by Evaluator: {user.email}
+                        Scanned Team
                       </span>
                       {activeTeam.updatedAt && (
-                        <span className="text-[11px] text-cyan-200/60">
+                        <span className="text-[11px] text-cyan-200/60 flex items-center gap-1">
+                          <Clock className="w-3 h-3" />
                           {new Date(activeTeam.updatedAt).toLocaleTimeString()}
                         </span>
                       )}
                     </div>
 
-                    {/* ONLY THIS TEAM NAME */}
+                    {/* Team Name */}
                     <h2 className="text-2xl sm:text-3xl font-black text-white tracking-tight mt-1">
                       Team: {activeTeam.teamName}
                     </h2>
@@ -761,19 +767,19 @@ export default function EvaluatorPage() {
                   </button>
 
                   <button
-                    onClick={() => handleSaveMarks()}
+                    onClick={() => handleSaveEvaluation()}
                     disabled={isSaving || activeTeam.students.length === 0}
                     className="py-2.5 px-5 rounded-xl font-bold text-xs uppercase tracking-wider bg-gradient-to-r from-emerald-600 to-teal-500 hover:from-emerald-500 hover:to-teal-400 text-white shadow-lg shadow-emerald-500/25 transition-all flex items-center gap-2 cursor-pointer disabled:opacity-50"
                   >
                     {isSaving ? (
                       <>
                         <RefreshCw className="w-4 h-4 animate-spin" />
-                        <span>Saving Marks...</span>
+                        <span>Submitting...</span>
                       </>
                     ) : (
                       <>
                         <Save className="w-4 h-4" />
-                        <span>Save All Marks</span>
+                        <span>Submit Evaluation</span>
                       </>
                     )}
                   </button>
@@ -782,42 +788,36 @@ export default function EvaluatorPage() {
             </div>
 
             {/* ======================================================== */}
-            {/* SCORING TABLE FOR THE STUDENTS OF THIS SCANNED TEAM      */}
+            {/* MAIN CARD: TEAM MEMBERS & INDIVIDUAL FEEDBACK TABLE     */}
             {/* ======================================================== */}
-            <div className="glass-panel-elevated rounded-3xl p-5 sm:p-6 border border-white/15 shadow-2xl overflow-hidden">
-              <div className="flex items-center justify-between pb-3 mb-4 border-b border-white/10">
+            <div className="glass-panel-elevated rounded-3xl p-5 sm:p-6 border border-white/15 shadow-2xl overflow-hidden flex flex-col gap-6">
+              {/* Header Title */}
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-4 border-b border-white/10 gap-2">
                 <div>
-                  <h3 className="text-base sm:text-lg font-bold text-white flex items-center gap-2">
-                    <Award className="w-5 h-5 text-cyan-300" />
-                    <span>Evaluation Scoring for Team "{activeTeam.teamName}"</span>
+                  <h3 className="text-lg sm:text-xl font-bold text-white flex items-center gap-2">
+                    <MessageSquare className="w-5 h-5 text-cyan-300" />
+                    <span>Team Members and Individual Feedback</span>
                   </h3>
-                  <p className="text-xs text-cyan-200/70 mt-0.5">
-                    Fill marks (0 to 10) for each column. On save, marks are stored into Google Sheet columns for each student.
+                  <p className="text-xs text-cyan-200/70 mt-1">
+                    Select an evaluation category and write specific remarks for each student. Enter overall team marks below.
                   </p>
                 </div>
 
-                <div className="text-xs text-emerald-300 bg-emerald-500/10 px-3 py-1 rounded-lg border border-emerald-400/20 font-semibold">
-                  {activeTeam.students.length} Students in Scanned Team
+                <div className="text-xs text-emerald-300 bg-emerald-500/10 px-3 py-1.5 rounded-xl border border-emerald-400/20 font-semibold self-start sm:self-auto flex items-center gap-1.5">
+                  <Users className="w-3.5 h-3.5 text-emerald-400" />
+                  <span>{activeTeam.students.length} Members in Team</span>
                 </div>
               </div>
 
               {/* TABLE */}
-              <div className="overflow-x-auto">
-                <table className="w-full text-left border-collapse min-w-[1020px]">
+              <div className="overflow-x-auto rounded-2xl border border-white/10">
+                <table className="w-full text-left border-collapse min-w-[720px]">
                   <thead>
                     <tr className="border-b border-white/15 text-[11px] font-extrabold uppercase tracking-wider text-cyan-200 bg-white/5">
-                      <th className="py-3.5 px-3 w-10 text-center">#</th>
-                      <th className="py-3.5 px-4 min-w-[200px]">Student Name</th>
-                      {CRITERIA_COLUMNS.map((col) => (
-                        <th key={col.key} className="py-3.5 px-2 text-center min-w-[115px]">
-                          <div className="font-bold text-white">{col.label}</div>
-                          <div className="text-[9px] text-cyan-300/70 font-mono">Column: {col.sheetColumn} (/10)</div>
-                        </th>
-                      ))}
-                      <th className="py-3.5 px-3 text-center min-w-[85px]">
-                        <div className="font-bold text-amber-300">Total</div>
-                        <div className="text-[9px] text-amber-300/70 font-mono">(/60)</div>
-                      </th>
+                      <th className="py-3.5 px-3 w-12 text-center">#</th>
+                      <th className="py-3.5 px-4 w-1/4 min-w-[180px]">Student Name</th>
+                      <th className="py-3.5 px-4 w-1/4 min-w-[200px]">Evaluation Category</th>
+                      <th className="py-3.5 px-4 min-w-[280px]">Your Remarks & All Feedback</th>
                       <th className="py-3.5 px-3 text-center w-24">Action</th>
                     </tr>
                   </thead>
@@ -825,78 +825,129 @@ export default function EvaluatorPage() {
                   <tbody className="divide-y divide-white/10">
                     {activeTeam.students.length > 0 ? (
                       activeTeam.students.map((student, idx) => {
-                        const marks = studentsMarks[student.name] || student.marks || {
-                          problem_understanding: "",
-                          prototype_development: "",
-                          innovation: "",
-                          team_work: "",
-                          market_readiness: "",
-                          presentation: "",
+                        const feedback = studentFeedback[student.name] || {
+                          category: student.evaluation_category || "Presentation",
+                          customCategory: student.custom_category || "",
+                          remarks: student.myRemark || student.remarks || "",
                         };
-                        const total = getStudentTotal(marks);
                         const isStudentSaving = savingStudent === student.name;
+                        const isOthers = feedback.category === "Others";
 
                         return (
                           <tr key={student.name + idx} className="hover:bg-white/5 transition-colors group">
                             {/* Index */}
-                            <td className="py-3.5 px-3 text-center">
-                              <span className="w-6 h-6 rounded-lg bg-white/10 text-cyan-200 text-xs font-bold inline-flex items-center justify-center">
+                            <td className="py-4 px-3 text-center align-top">
+                              <span className="w-7 h-7 rounded-xl bg-white/10 text-cyan-200 text-xs font-bold inline-flex items-center justify-center mt-1">
                                 {idx + 1}
                               </span>
                             </td>
 
                             {/* Student Name */}
-                            <td className="py-3.5 px-4">
+                            <td className="py-4 px-4 align-top">
                               <div className="font-bold text-white text-sm group-hover:text-cyan-200 transition-colors">
                                 {student.name}
                               </div>
                               {student.email && (
-                                <div className="text-[11px] text-cyan-300/60 truncate max-w-[200px]">
+                                <div className="text-[11px] text-cyan-300/60 truncate max-w-[200px] mt-0.5">
                                   {student.email}
                                 </div>
                               )}
                               {student.college && (
-                                <div className="text-[10px] text-cyan-300/40 truncate max-w-[200px]">
+                                <div className="text-[10px] text-cyan-300/40 truncate max-w-[200px] mt-0.5">
                                   🏫 {student.college}
                                 </div>
                               )}
                             </td>
 
-                            {/* 6 Criteria Columns */}
-                            {CRITERIA_COLUMNS.map((col) => {
-                              const val = marks[col.key] || "";
-                              return (
-                                <td key={col.key} className="py-3.5 px-2 text-center">
-                                  <input
-                                    type="number"
-                                    min="0"
-                                    max="10"
-                                    step="0.5"
-                                    value={val}
-                                    placeholder="0-10"
+                            {/* Evaluation Category Dropdown */}
+                            <td className="py-4 px-4 align-top">
+                              <div className="flex flex-col gap-2">
+                                <div className="relative">
+                                  <select
+                                    value={feedback.category}
                                     onChange={(e) =>
-                                      handleMarkChange(student.name, col.key, e.target.value)
+                                      handleCategoryChange(student.name, e.target.value)
                                     }
-                                    className={`w-20 text-center py-2 px-1 rounded-xl bg-black/40 border border-white/20 text-white font-bold text-sm placeholder-cyan-200/20 focus:outline-none focus:ring-2 transition-all ${col.focusBorder}`}
-                                  />
-                                </td>
-                              );
-                            })}
+                                    className="w-full appearance-none py-2.5 pl-3.5 pr-10 rounded-xl bg-black/40 border border-white/20 text-white font-medium text-xs sm:text-sm focus:outline-none focus:ring-2 focus:ring-[#00A8E8] transition-all cursor-pointer"
+                                  >
+                                    {EVALUATION_CATEGORIES.map((cat) => (
+                                      <option key={cat} value={cat} className="bg-[#002233] text-white">
+                                        {cat}
+                                      </option>
+                                    ))}
+                                  </select>
+                                  <div className="absolute inset-y-0 right-0 pr-3 flex items-center pointer-events-none text-cyan-300">
+                                    <ChevronDown className="w-4 h-4" />
+                                  </div>
+                                </div>
 
-                            {/* Total Score */}
-                            <td className="py-3.5 px-3 text-center">
-                              <span className="inline-flex items-center justify-center min-w-[50px] py-1.5 px-2 rounded-xl bg-amber-500/20 border border-amber-400/40 text-amber-300 font-extrabold text-sm">
-                                {total}
-                              </span>
+                                {/* Custom Category Input if Others is selected */}
+                                {isOthers && (
+                                  <div className="animate-fade-in">
+                                    <input
+                                      type="text"
+                                      value={feedback.customCategory}
+                                      onChange={(e) =>
+                                        handleCustomCategoryChange(student.name, e.target.value)
+                                      }
+                                      placeholder="Specify category..."
+                                      className="w-full py-2 px-3 rounded-xl bg-black/50 border border-cyan-400/50 text-cyan-100 text-xs placeholder-cyan-300/40 focus:outline-none focus:ring-2 focus:ring-[#00A8E8] transition-all"
+                                    />
+                                  </div>
+                                )}
+                              </div>
                             </td>
 
-                            {/* Save Action */}
-                            <td className="py-3.5 px-3 text-center">
+                            {/* Individual Remarks Box & Combined History */}
+                            <td className="py-4 px-4 align-top">
+                              <textarea
+                                rows={2}
+                                value={feedback.remarks}
+                                onChange={(e) =>
+                                  handleRemarksChange(student.name, e.target.value)
+                                }
+                                placeholder={`Enter your remarks for ${student.name}...`}
+                                className="w-full py-2.5 px-3.5 rounded-xl bg-black/40 border border-white/20 text-white text-xs sm:text-sm placeholder-cyan-200/30 focus:outline-none focus:ring-2 focus:ring-[#00A8E8] transition-all resize-y min-h-[58px]"
+                              />
+
+                              {/* Combined Panelists' Remarks Display */}
+                              {student.combinedRemarks && student.combinedRemarks.trim() && (
+                                <div className="mt-2.5 p-2.5 rounded-xl bg-black/40 border border-cyan-400/20 text-xs">
+                                  <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-cyan-300 mb-1.5">
+                                    <MessageSquare className="w-3 h-3 text-cyan-400" />
+                                    <span>All Panelists' Remarks:</span>
+                                  </div>
+                                  <div className="flex flex-wrap gap-1.5">
+                                    {student.combinedRemarks.split("|").map((entry, eIdx) => {
+                                      const trimmed = entry.trim();
+                                      if (!trimmed) return null;
+                                      const colonIdx = trimmed.indexOf(":");
+                                      const uid = colonIdx > -1 ? trimmed.substring(0, colonIdx).trim() : "";
+                                      const msg = colonIdx > -1 ? trimmed.substring(colonIdx + 1).trim() : trimmed;
+                                      return (
+                                        <div
+                                          key={eIdx}
+                                          className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white/5 border border-white/10 text-xs"
+                                        >
+                                          <span className="font-mono font-bold text-cyan-300 text-[11px] bg-cyan-950/60 px-1.5 py-0.5 rounded border border-cyan-400/30">
+                                            {uid || "Panelist"}
+                                          </span>
+                                          <span className="text-cyan-100">{msg}</span>
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                </div>
+                              )}
+                            </td>
+
+                            {/* Row Action (Quick Save for student) */}
+                            <td className="py-4 px-3 text-center align-top">
                               <button
-                                onClick={() => handleSaveMarks(student)}
+                                onClick={() => handleSaveEvaluation(student)}
                                 disabled={isStudentSaving || isSaving}
-                                title={`Save marks for ${student.name} to Google Sheet`}
-                                className="py-1.5 px-3 rounded-xl text-xs font-bold bg-[#007EA7]/40 hover:bg-[#007EA7] border border-cyan-400/40 text-white transition-all flex items-center justify-center gap-1.5 mx-auto disabled:opacity-50 cursor-pointer"
+                                title={`Save remarks for ${student.name}`}
+                                className="py-2 px-3 rounded-xl text-xs font-bold bg-[#007EA7]/40 hover:bg-[#007EA7] border border-cyan-400/40 text-white transition-all flex items-center justify-center gap-1.5 mx-auto disabled:opacity-50 cursor-pointer mt-1"
                               >
                                 {isStudentSaving ? (
                                   <RefreshCw className="w-3.5 h-3.5 animate-spin" />
@@ -913,7 +964,7 @@ export default function EvaluatorPage() {
                       })
                     ) : (
                       <tr>
-                        <td colSpan={10} className="py-12 text-center text-cyan-200/60 text-sm">
+                        <td colSpan={5} className="py-12 text-center text-cyan-200/60 text-sm">
                           No students found for this scanned team.
                         </td>
                       </tr>
@@ -922,33 +973,146 @@ export default function EvaluatorPage() {
                 </table>
               </div>
 
-              {/* Bottom Save All & Info Bar */}
-              <div className="mt-5 pt-4 border-t border-white/10 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-cyan-200/70">
+              {/* ======================================================== */}
+              {/* TEAM MARKS SECTION (Entered once for the team)           */}
+              {/* ======================================================== */}
+              <div className="p-5 sm:p-6 rounded-2xl bg-white/5 border border-white/15 flex flex-col gap-5 shadow-inner">
+                {/* Live Statistics Cards */}
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  {/* Total Marks (Sum) */}
+                  <div className="p-4 rounded-xl bg-black/40 border border-white/15 flex items-center justify-between shadow-sm">
+                    <div>
+                      <div className="text-[10px] font-extrabold uppercase tracking-wider text-cyan-300">
+                        Total Marks (Sum)
+                      </div>
+                      <div className="text-2xl font-black text-amber-300 mt-0.5">
+                        {activeTeam.totalMarks ?? 0}
+                      </div>
+                      <div className="text-[10px] text-cyan-200/50 mt-0.5">
+                        Sum of all panelists' marks
+                      </div>
+                    </div>
+                    <div className="w-10 h-10 rounded-xl bg-amber-500/10 border border-amber-400/20 flex items-center justify-center text-amber-300">
+                      <Award className="w-5 h-5" />
+                    </div>
+                  </div>
+
+                  {/* Panelist Count */}
+                  <div className="p-4 rounded-xl bg-black/40 border border-white/15 flex items-center justify-between shadow-sm">
+                    <div>
+                      <div className="text-[10px] font-extrabold uppercase tracking-wider text-cyan-300">
+                        Panelists Evaluated
+                      </div>
+                      <div className="text-2xl font-black text-cyan-200 mt-0.5">
+                        {activeTeam.panelistCount ?? 0}
+                      </div>
+                      <div className="text-[10px] text-cyan-200/50 mt-0.5">
+                        Distinct panelist count
+                      </div>
+                    </div>
+                    <div className="w-10 h-10 rounded-xl bg-cyan-500/10 border border-cyan-400/20 flex items-center justify-center text-cyan-300">
+                      <Users className="w-5 h-5" />
+                    </div>
+                  </div>
+
+                  {/* Average Score */}
+                  <div className="p-4 rounded-xl bg-black/40 border border-white/15 flex items-center justify-between shadow-sm">
+                    <div>
+                      <div className="text-[10px] font-extrabold uppercase tracking-wider text-cyan-300">
+                        Average Score
+                      </div>
+                      <div className="text-2xl font-black text-emerald-300 mt-0.5">
+                        {activeTeam.averageMarks ||
+                          (activeTeam.panelistCount && activeTeam.totalMarks
+                            ? (activeTeam.totalMarks / activeTeam.panelistCount).toFixed(1)
+                            : "—")}
+                      </div>
+                      <div className="text-[10px] text-cyan-200/50 mt-0.5">
+                        Calculated average
+                      </div>
+                    </div>
+                    <div className="w-10 h-10 rounded-xl bg-emerald-500/10 border border-emerald-400/20 flex items-center justify-center text-emerald-300">
+                      <Calculator className="w-5 h-5" />
+                    </div>
+                  </div>
+                </div>
+
+                {/* Already Submitted Status Banner */}
+                {activeTeam.alreadySubmitted && activeTeam.myTeamMarks && (
+                  <div className="p-3 rounded-xl bg-cyan-500/15 border border-cyan-400/30 text-cyan-100 text-xs flex items-center gap-2">
+                    <CheckCircle2 className="w-4 h-4 text-cyan-300 flex-shrink-0" />
+                    <span>
+                      You have previously submitted <strong>{activeTeam.myTeamMarks} marks</strong> for Team &quot;{activeTeam.teamName}&quot;. Submitting again will update your score without incrementing the panelist count or duplicating marks.
+                    </span>
+                  </div>
+                )}
+
+                {/* Input and Submit Controls */}
+                <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-5 pt-2 border-t border-white/10">
+                  <div className="flex-1">
+                    <div className="flex items-center gap-2">
+                      <Award className="w-5 h-5 text-amber-300" />
+                      <label htmlFor="team-marks-box" className="text-base sm:text-lg font-bold text-white">
+                        Enter Your Marks for this Team:
+                      </label>
+                    </div>
+                    <p className="text-xs text-cyan-200/80 mt-1">
+                      Provide your team score. This will be added to the <strong>TotalMarks</strong> sum and increment <strong>PanelistCount</strong> in Google Sheet.
+                    </p>
+                    {teamMarksError && (
+                      <div className="mt-2 text-xs font-bold text-red-300 flex items-center gap-1.5">
+                        <AlertCircle className="w-4 h-4 text-red-400" />
+                        <span>{teamMarksError}</span>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 w-full md:w-auto">
+                    <div className="relative">
+                      <input
+                        id="team-marks-box"
+                        type="number"
+                        min="0"
+                        max="100"
+                        step="0.5"
+                        value={teamMarks}
+                        onChange={(e) => handleTeamMarksChange(e.target.value)}
+                        placeholder="Enter marks"
+                        className="w-full sm:w-44 text-center py-3 px-4 rounded-xl bg-black/50 border border-white/25 text-white font-extrabold text-base placeholder-cyan-200/30 focus:outline-none focus:ring-2 focus:ring-[#00A8E8] transition-all"
+                      />
+                    </div>
+
+                    <button
+                      onClick={() => handleSaveEvaluation()}
+                      disabled={isSaving || activeTeam.students.length === 0}
+                      className="py-3 px-6 rounded-xl font-bold text-xs uppercase tracking-wider bg-gradient-to-r from-emerald-600 to-teal-500 hover:from-emerald-500 hover:to-teal-400 text-white shadow-lg shadow-emerald-500/25 transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+                    >
+                      {isSaving ? (
+                        <>
+                          <RefreshCw className="w-4 h-4 animate-spin" />
+                          <span>Submitting...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Save className="w-4 h-4" />
+                          <span>Submit Evaluation</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {/* Bottom Sync Info Bar */}
+              <div className="pt-3 border-t border-white/10 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-cyan-200/70">
                 <div className="flex items-center gap-2">
                   <Sparkles className="w-4 h-4 text-cyan-300" />
                   <span>
-                    Direct Google Sheet sync active for Team <strong>{activeTeam.teamName}</strong> ({activeTeam.teamCode}).
+                    Google Sheet & Database live sync active for Team <strong>{activeTeam.teamName}</strong> ({activeTeam.teamCode}).
                   </span>
                 </div>
-
-                <div className="flex items-center gap-3">
-                  <button
-                    onClick={() => handleSaveMarks()}
-                    disabled={isSaving || activeTeam.students.length === 0}
-                    className="py-2 px-4 rounded-xl font-bold text-xs uppercase tracking-wider bg-gradient-to-r from-emerald-600 to-teal-500 hover:from-emerald-500 hover:to-teal-400 text-white shadow-md shadow-emerald-500/20 transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
-                  >
-                    {isSaving ? (
-                      <>
-                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                        <span>Saving...</span>
-                      </>
-                    ) : (
-                      <>
-                        <Save className="w-3.5 h-3.5" />
-                        <span>Save All Marks for this Team</span>
-                      </>
-                    )}
-                  </button>
+                <div className="text-[11px] text-cyan-300/70 font-mono">
+                  Columns: TotalMarks • PanelistCount • Remarks ({userIdDisplay}: remark) • Category
                 </div>
               </div>
             </div>
